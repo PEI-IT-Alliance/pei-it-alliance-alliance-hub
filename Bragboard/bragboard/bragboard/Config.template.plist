@@ -4,5 +4,7 @@
 <dict>
 	<key>LocariusAPIToken</key>
 	<string>YOUR_TOKEN_HERE</string>
+	<key>NightShiftTVKey</key>
+	<string>YOUR_TOKEN_HERE</string>
 </dict>
 </plist>

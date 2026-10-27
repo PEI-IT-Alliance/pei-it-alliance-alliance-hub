@@ -49,6 +49,16 @@ struct TVDashboardView: View {
         case threeDays
     }
 
+    // Night Shift feed (page 5 joins the slideshow only while a session is live)
+    @State private var nightShift = NightShiftStore()
+
+    /// The Night Shift card takes the top-left grid slot on the evening only
+    /// (1 hour before the session until it ends). Polling re-checks the window.
+    private var nightShiftCard: NightShiftSnapshot? {
+        guard let snapshot = nightShift.snapshot, snapshot.showsCard() else { return nil }
+        return snapshot
+    }
+
     var enabledWidgets: [Widget] {
         // Filter out Countries Served widget - it's only shown as full-screen page, not in dashboard
         allWidgets.filter { $0.isEnabled && $0.type != .countriesServed }
@@ -71,18 +81,30 @@ struct TVDashboardView: View {
                     ZStack(alignment: .leading) {
                         // Page 0: Dashboard
                         ZStack {
-                            if allWidgets.isEmpty && !isSyncing {
-                                // No widgets at all - need to sync or add from iPhone
-                                emptyStateView
-                            } else if enabledWidgets.isEmpty && !allWidgets.isEmpty {
-                                // Widgets exist but none enabled
-                                noEnabledWidgetsView
-                            } else if enabledWidgets.isEmpty && isSyncing {
-                                // Currently syncing
-                                syncingView
-                            } else {
-                                // Show widget dashboard
-                                dashboardView
+                            Group {
+                                if allWidgets.isEmpty && !isSyncing {
+                                    // No widgets at all - need to sync or add from iPhone
+                                    emptyStateView
+                                } else if enabledWidgets.isEmpty && !allWidgets.isEmpty {
+                                    // Widgets exist but none enabled
+                                    noEnabledWidgetsView
+                                } else if enabledWidgets.isEmpty && isSyncing {
+                                    // Currently syncing
+                                    syncingView
+                                } else {
+                                    // Show widget dashboard
+                                    dashboardView
+                                }
+                            }
+                            // Keep the empty-state text clear of the Night Shift card
+                            .padding(.leading, enabledWidgets.isEmpty && nightShiftCard != nil ? 620 : 0)
+
+                            // No widget grid to hold the Night Shift card, so pin it top-left
+                            if enabledWidgets.isEmpty, let nightShiftCard {
+                                nightShiftCardTile(nightShiftCard)
+                                    .frame(width: 560)
+                                    .padding(60)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             }
                         }
                         .frame(width: geometry.size.width, height: geometry.size.height)
@@ -107,6 +129,20 @@ struct TVDashboardView: View {
                         worldMapPage
                             .frame(width: geometry.size.width, height: geometry.size.height)
                             .offset(x: CGFloat(4 - currentPage) * geometry.size.width)
+
+                        // Page 5: Night Shift page
+                        NightShiftPageView(store: nightShift)
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .offset(x: CGFloat(5 - currentPage) * geometry.size.width)
+                            .task(id: currentPage) {
+                                // Leave the page within 15 s of the session ending, not on the next 60 s slide
+                                guard currentPage == 5 else { return }
+                                while nightShift.snapshot?.showsPage() == true {
+                                    try? await Task.sleep(for: .seconds(15))
+                                    if Task.isCancelled { return }
+                                }
+                                withAnimation(.easeInOut(duration: 1.0)) { currentPage = 0 }
+                            }
                     }
                     .clipped() // Prevent pages from showing outside the viewport
                 }
@@ -208,7 +244,7 @@ struct TVDashboardView: View {
                     Spacer()
 
                     HStack(spacing: 12) {
-                        ForEach(0..<5, id: \.self) { index in
+                        ForEach(0..<(nightShift.snapshot?.showsPage() == true ? 6 : 5), id: \.self) { index in
                             Circle()
                                 .fill(currentPage == index ? Color.white : Color.white.opacity(0.4))
                                 .frame(width: currentPage == index ? 12 : 8, height: currentPage == index ? 12 : 8)
@@ -278,9 +314,12 @@ struct TVDashboardView: View {
 
             // Fetch events for calendar
             fetchEvents()
+
+            nightShift.startPolling()
         }
         .onDisappear {
             // Clean up timers
+            nightShift.stopPolling()
             stopShuffleTimer()
             stopSlidingTimer()
             stopPhotoTimer()
@@ -1085,12 +1124,17 @@ struct TVDashboardView: View {
 
     // MARK: - ✨ NEW: Custom Widget Grid (handles 2x widgets)
     private var widgetGridView: some View {
-        let columnAssignments = distributeWidgetsToColumns(shuffledWidgets)
-        
+        let columnAssignments = distributeWidgetsToColumns(shuffledWidgets, reserveFirstSlot: nightShiftCard != nil)
+
         return HStack(alignment: .top, spacing: 30) {
             // 3 columns
             ForEach(0..<3, id: \.self) { columnIndex in
                 VStack(spacing: 50) {
+                    // Night Shift card in the top-left slot
+                    if columnIndex == 0, let nightShiftCard {
+                        nightShiftCardTile(nightShiftCard)
+                    }
+
                     // Get widgets assigned to this column
                     ForEach(columnAssignments[columnIndex], id: \.id) { widget in
                         TVWidgetContainer {
@@ -1108,11 +1152,24 @@ struct TVDashboardView: View {
         .animation(.easeInOut(duration: 0.8), value: shuffledWidgets.map { $0.id })
     }
     
+    /// The Night Shift card at the size of a 1× widget.
+    private func nightShiftCardTile(_ snapshot: NightShiftSnapshot) -> some View {
+        TVWidgetContainer {
+            NightShiftCardView(snapshot: snapshot)
+        }
+        .frame(height: 400)
+        .aspectRatio(1.4, contentMode: .fit)
+        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+    }
+
     // ✨ NEW: Smart distribution algorithm that prevents widgets from disappearing
-    private func distributeWidgetsToColumns(_ widgets: [Widget]) -> [[Widget]] {
+    private func distributeWidgetsToColumns(_ widgets: [Widget], reserveFirstSlot: Bool) -> [[Widget]] {
         // Initialize 3 empty columns
         var columns: [[Widget]] = [[], [], []]
         var columnCapacity = [2, 2, 2] // Each column can hold 2 rows initially
+        if reserveFirstSlot {
+            columnCapacity[0] = 1 // Night Shift card holds the top-left slot
+        }
         
         // Process widgets in order
         for widget in widgets {
@@ -1183,6 +1240,8 @@ struct TVDashboardView: View {
                     currentPage = 2  // Logo -> Calendar
                 } else if currentPage == 2 {
                     currentPage = 3  // Calendar -> Photos
+                } else if currentPage == 3 && nightShift.snapshot?.showsPage() == true {
+                    currentPage = 5  // Photos -> Night Shift (live sessions only)
                 } else {
                     currentPage = 0  // Photos -> Dashboard (or World Map -> Dashboard if manually navigated)
                 }
