@@ -16,6 +16,7 @@ struct AppConfig {
     // MARK: - Configuration Keys
     private enum ConfigKey: String {
         case locariusAPIToken = "LocariusAPIToken"
+        case nightShiftTVKey = "NightShiftTVKey"
     }
     
     // MARK: - Config Loading
@@ -84,6 +85,13 @@ struct AppConfig {
         return ""
     }
     
+    /// Read-only Night Shift TV key for the Foundry feed.
+    /// Config.plist only — never in code or CloudKit, and never printed.
+    var nightShiftTVKey: String {
+        let key = configDictionary[ConfigKey.nightShiftTVKey.rawValue] as? String ?? ""
+        return key == "YOUR_TOKEN_HERE" ? "" : key
+    }
+
     // MARK: - Validation
     
     /// Check if Locarius API is properly configured
